@@ -12,7 +12,7 @@ type Server struct {
 	n *maelstrom.Node
 
 	rMu     sync.Mutex
-	readset []int
+	readset map[int]bool
 
 	nMu       sync.Mutex
 	neighbors []string
@@ -23,7 +23,7 @@ func main() {
 
 	s := Server{
 		n:         n,
-		readset:   []int{},
+		readset:   make(map[int]bool),
 		neighbors: []string{},
 	}
 
@@ -42,9 +42,21 @@ func (s *Server) broadcastHandler(msg maelstrom.Message) error {
 		return err
 	}
 
+	val := int(body["message"].(float64))
+	exist := false
+
 	s.rMu.Lock()
-	s.readset = append(s.readset, int(body["message"].(float64)))
+	if _, ok := s.readset[val]; ok {
+		exist = true
+	}
+	s.readset[val] = true
 	s.rMu.Unlock()
+
+	if !exist {
+		if err := s.passMessage(body); err != nil {
+			return err
+		}
+	}
 
 	return s.n.Reply(msg, map[string]any{
 		"type": "broadcast_ok",
@@ -57,9 +69,18 @@ func (s *Server) readHandler(msg maelstrom.Message) error {
 		return err
 	}
 
+	s.rMu.Lock()
+	readset := s.readset
+	s.rMu.Unlock()
+
+	valList := []int{}
+	for val := range readset {
+		valList = append(valList, val)
+	}
+
 	return s.n.Reply(msg, map[string]any{
 		"type":     "read_ok",
-		"messages": s.readset,
+		"messages": valList,
 	})
 }
 
@@ -86,4 +107,16 @@ func (s *Server) topologyHandler(msg maelstrom.Message) error {
 	return s.n.Reply(msg, map[string]any{
 		"type": "topology_ok",
 	})
+}
+
+func (s *Server) passMessage(body map[string]any) error {
+	for _, neighbor := range s.neighbors {
+		n := neighbor
+		go func() {
+			if err := s.n.Send(n, body); err != nil {
+				panic(err)
+			}
+		}()
+	}
+	return nil
 }
